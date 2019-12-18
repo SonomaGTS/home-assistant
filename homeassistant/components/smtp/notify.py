@@ -31,6 +31,7 @@ import homeassistant.util.dt as dt_util
 _LOGGER = logging.getLogger(__name__)
 
 ATTR_IMAGES = "images"  # optional embedded image file attachments
+ATTR_ATTACHMENTS = "attachments"  # optional non-embedded attachments image or file
 ATTR_HTML = "html"
 
 CONF_ENCRYPTION = "encryption"
@@ -172,6 +173,8 @@ class MailNotificationService(BaseNotificationService):
                 msg = _build_html_msg(
                     message, data[ATTR_HTML], images=data.get(ATTR_IMAGES, [])
                 )
+            elif ATTR_ATTACHMENTS in data:
+                msg = _build_multipart_attachments_msg(message, attachments=data.get(ATTR_ATTACHMENTS, []))
             else:
                 msg = _build_multipart_msg(message, images=data.get(ATTR_IMAGES, []))
         else:
@@ -213,6 +216,47 @@ def _build_text_msg(message):
     """Build plaintext email."""
     _LOGGER.debug("Building plain text email")
     return MIMEText(message)
+
+
+def _build_multipart_attachments_msg(message, attachments):
+    """Build message with attached images."""
+    _LOGGER.debug("Building multipart email with attachment(s)")
+    msg = MIMEMultipart("related")
+    msg_alt = MIMEMultipart("alternative")
+    msg.attach(msg_alt)
+    body_txt = MIMEText(message)
+    msg_alt.attach(body_txt)
+    body_text = [f"<p>{message}</p><br>"]
+
+    for atch_num, atch_name in enumerate(attachments):
+        name = os.path.basename(atch_name)
+        cid = f"attachment{atch_num}"
+        try:
+            with open(atch_name, "rb") as attachment_file:
+                file_bytes = attachment_file.read()
+                try:
+                    attachment = MIMEImage(file_bytes)
+                    attachment.add_header('Content-Disposition', 'attachment', filename=name)
+                    attachment.add_header('X-Attachment-Id', f"<{cid}>")
+                    attachment.add_header('Content-ID', f"<{cid}>")
+                    msg.attach(attachment)
+                except TypeError:
+                    _LOGGER.warning(
+                        "Attachment %s has an unknown MIME type. "
+                        "Falling back to file",
+                        atch_name,
+                    )
+                    attachment = MIMEApplication(file_bytes, Name=atch_name)
+                    attachment["Content-Disposition"] = (
+                        "attachment; " 'filename="%s"' % atch_name
+                    )
+                    msg.attach(attachment)
+        except FileNotFoundError:
+            _LOGGER.warning("Attachment %s not found. Skipping", atch_name)
+
+    body_html = MIMEText("".join(body_text), "html")
+    msg_alt.attach(body_html)
+    return msg
 
 
 def _build_multipart_msg(message, images):
